@@ -8,6 +8,7 @@ export class MassiveClient extends EventEmitter {
   private readonly symbols: string[] = ['AMZN', 'GOOG', 'GOOGL', 'AMD', 'NVDA'];
   private reconnectTimeout: NodeJS.Timeout | null = null;
   private isConnecting: boolean = false;
+  private simulationInterval: NodeJS.Timeout | null = null;
 
   constructor(apiKey: string) {
     super();
@@ -22,45 +23,88 @@ export class MassiveClient extends EventEmitter {
     this.isConnecting = true;
     
     try {
-      // Based on massive.com websocket documentation
-      this.ws = new WebSocket('wss://api.massive.com/v1/websocket', {
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`
-        }
-      });
-
-      this.ws.on('open', () => {
-        console.log('Connected to Massive API');
-        this.isConnecting = false;
-        this.subscribeToStocks();
-      });
-
-      this.ws.on('message', (data) => {
+      console.log('Attempting to connect to Massive API...');
+      
+      // Try different WebSocket endpoints based on Massive API documentation
+      const endpoints = [
+        'wss://api.massive.com/v1/websocket',
+        'wss://ws.massive.com/v1',
+        'wss://massive.com/api/v1/websocket'
+      ];
+      
+      for (const endpoint of endpoints) {
         try {
-          const message = JSON.parse(data.toString());
-          this.handleMessage(message);
+          this.ws = new WebSocket(endpoint, {
+            headers: {
+              'Authorization': `Bearer ${this.apiKey}`,
+              'X-API-Key': this.apiKey
+            }
+          });
+
+          await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+              reject(new Error('Connection timeout'));
+            }, 5000);
+
+            this.ws!.on('open', () => {
+              clearTimeout(timeout);
+              console.log(`Connected to Massive API at ${endpoint}`);
+              this.isConnecting = false;
+              this.subscribeToStocks();
+              resolve(void 0);
+            });
+
+            this.ws!.on('error', (error) => {
+              clearTimeout(timeout);
+              reject(error);
+            });
+          });
+
+          // If we get here, connection was successful
+          this.setupEventHandlers();
+          return;
+
         } catch (error) {
-          console.error('Error parsing message:', error);
+          console.log(`Failed to connect to ${endpoint}:`, error);
+          if (this.ws) {
+            this.ws.close();
+            this.ws = null;
+          }
         }
-      });
-
-      this.ws.on('close', () => {
-        console.log('Disconnected from Massive API');
-        this.isConnecting = false;
-        this.scheduleReconnect();
-      });
-
-      this.ws.on('error', (error) => {
-        console.error('WebSocket error:', error);
-        this.isConnecting = false;
-        this.scheduleReconnect();
-      });
+      }
+      
+      // If all endpoints failed, throw error
+      throw new Error('All WebSocket endpoints failed');
 
     } catch (error) {
-      console.error('Connection error:', error);
+      console.error('Failed to connect to any Massive API endpoint:', error);
+      this.isConnecting = false;
+      throw error;
+    }
+  }
+
+  private setupEventHandlers(): void {
+    if (!this.ws) return;
+
+    this.ws.on('message', (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        this.handleMessage(message);
+      } catch (error) {
+        console.error('Error parsing message:', error);
+      }
+    });
+
+    this.ws.on('close', () => {
+      console.log('Disconnected from Massive API');
       this.isConnecting = false;
       this.scheduleReconnect();
-    }
+    });
+
+    this.ws.on('error', (error) => {
+      console.error('WebSocket error:', error);
+      this.isConnecting = false;
+    });
   }
 
   private subscribeToStocks(): void {
@@ -68,32 +112,74 @@ export class MassiveClient extends EventEmitter {
       return;
     }
 
-    // Subscribe to real-time stock data
-    for (const symbol of this.symbols) {
-      const subscribeMessage: MassiveMessage = {
+    // Try different subscription message formats
+    const subscriptionMessages = [
+      {
         action: 'subscribe',
-        params: {
-          channel: 'stock_quotes',
-          symbol: symbol
+        symbols: this.symbols,
+        feed: 'quotes'
+      },
+      {
+        type: 'subscribe',
+        channel: 'stocks',
+        symbols: this.symbols
+      },
+      {
+        command: 'subscribe',
+        data: {
+          symbols: this.symbols,
+          feed: 'real-time'
         }
-      };
-      
-      this.ws.send(JSON.stringify(subscribeMessage));
-      console.log(`Subscribed to ${symbol}`);
+      }
+    ];
+
+    for (const message of subscriptionMessages) {
+      try {
+        this.ws.send(JSON.stringify(message));
+        console.log('Sent subscription message:', message);
+      } catch (error) {
+        console.error('Error sending subscription:', error);
+      }
     }
   }
 
   private handleMessage(message: any): void {
-    if (message.channel === 'stock_quotes' && message.data) {
-      const stockData: StockData = {
-        symbol: message.data.symbol || message.symbol,
-        price: parseFloat(message.data.price || message.price || Math.random() * 200 + 50),
-        timestamp: Date.now(),
-        change: parseFloat(message.data.change || Math.random() * 10 - 5),
-        changePercent: parseFloat(message.data.changePercent || Math.random() * 5 - 2.5)
-      };
-      
-      this.emit('stockUpdate', stockData);
+    console.log('Received message:', message);
+    
+    try {
+      // Handle different message formats from Massive API
+      if (message.type === 'quote' || message.type === 'stock_update') {
+        const stockData: StockData = {
+          symbol: message.symbol || message.ticker,
+          price: parseFloat(message.price || message.last || message.close),
+          timestamp: message.timestamp || Date.now(),
+          change: parseFloat(message.change || 0),
+          changePercent: parseFloat(message.changePercent || message.change_percent || 0)
+        };
+        
+        if (this.symbols.includes(stockData.symbol)) {
+          this.emit('stockUpdate', stockData);
+        }
+      } else if (message.data && Array.isArray(message.data)) {
+        // Handle array of stock updates
+        message.data.forEach((item: any) => {
+          if (item.symbol && item.price) {
+            const stockData: StockData = {
+              symbol: item.symbol,
+              price: parseFloat(item.price),
+              timestamp: item.timestamp || Date.now(),
+              change: parseFloat(item.change || 0),
+              changePercent: parseFloat(item.changePercent || 0)
+            };
+            
+            if (this.symbols.includes(stockData.symbol)) {
+              this.emit('stockUpdate', stockData);
+            }
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Error processing message:', error);
     }
   }
 
@@ -104,7 +190,9 @@ export class MassiveClient extends EventEmitter {
     
     this.reconnectTimeout = setTimeout(() => {
       console.log('Attempting to reconnect...');
-      this.connect();
+      this.connect().catch(error => {
+        console.error('Reconnection failed:', error);
+      });
     }, 5000);
   }
 
@@ -114,24 +202,54 @@ export class MassiveClient extends EventEmitter {
       this.reconnectTimeout = null;
     }
     
+    if (this.simulationInterval) {
+      clearInterval(this.simulationInterval);
+      this.simulationInterval = null;
+    }
+    
     if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
   }
 
-  // Simulate stock data for testing purposes when real API is not available
+  // Enhanced simulation for testing when real API is not available
   startSimulation(): void {
-    console.log('Starting stock data simulation...');
+    console.log('Starting enhanced stock data simulation...');
+    
+    // Clear any existing simulation
+    if (this.simulationInterval) {
+      clearInterval(this.simulationInterval);
+    }
+    
+    // Base prices for more realistic simulation
+    const basePrices = {
+      'AMZN': 150,
+      'GOOG': 140,
+      'GOOGL': 140,
+      'AMD': 120,
+      'NVDA': 500
+    };
+    
+    let currentPrices = { ...basePrices };
     
     const simulateData = () => {
       for (const symbol of this.symbols) {
+        // More realistic price movement
+        const volatility = 0.02; // 2% volatility
+        const change = (Math.random() - 0.5) * 2 * volatility;
+        const newPrice = currentPrices[symbol] * (1 + change);
+        const priceChange = newPrice - currentPrices[symbol];
+        const changePercent = (priceChange / currentPrices[symbol]) * 100;
+        
+        currentPrices[symbol] = newPrice;
+        
         const stockData: StockData = {
           symbol,
-          price: Math.random() * 200 + 50,
+          price: Number(newPrice.toFixed(2)),
           timestamp: Date.now(),
-          change: Math.random() * 10 - 5,
-          changePercent: Math.random() * 5 - 2.5
+          change: Number(priceChange.toFixed(2)),
+          changePercent: Number(changePercent.toFixed(2))
         };
         
         this.emit('stockUpdate', stockData);
@@ -141,7 +259,7 @@ export class MassiveClient extends EventEmitter {
     // Send initial data
     simulateData();
     
-    // Send updates every 2-5 seconds
-    setInterval(simulateData, Math.random() * 3000 + 2000);
+    // Send updates every 2-4 seconds to ensure changes are visible
+    this.simulationInterval = setInterval(simulateData, 2000 + Math.random() * 2000);
   }
 }

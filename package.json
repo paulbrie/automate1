@@ -16,10 +16,10 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.58.1",
-    "@types/express": "^4.17.20",
-    "@types/node": "^20.8.0",
-    "@types/ws": "^8.5.8",
-    "tsx": "^4.0.0",
-    "typescript": "^5.2.2"
+    "@types/express": "^4.17.25",
+    "@types/node": "^20.19.30",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
   }
 }

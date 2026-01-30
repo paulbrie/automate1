@@ -4,6 +4,8 @@ import { createServer } from 'http';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { readFileSync } from 'fs';
+import { MassiveClient } from './massiveClient';
+import { StockData } from './types';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -30,26 +32,43 @@ const SYMBOLS = ['AMZN', 'GOOG', 'GOOGL', 'AMD', 'NVDA'];
 const API_KEY = 'EYhMPuHLcnjnNdAKNHT5xRSJTDYphEIq';
 
 // Store current stock prices
-const stockPrices: { [symbol: string]: number } = {};
+const stockPrices: { [symbol: string]: StockData } = {};
 
-// Mock data for testing - in a real app, you'd connect to the massive API
-function generateMockPrice(symbol: string): number {
-  const basePrice = {
-    'AMZN': 150,
-    'GOOG': 140,
-    'GOOGL': 138,
-    'AMD': 120,
-    'NVDA': 500
-  };
+// Create massive client
+const massiveClient = new MassiveClient(API_KEY);
+
+// Listen for stock updates from massive API
+massiveClient.on('stockUpdate', (stockData: StockData) => {
+  stockPrices[stockData.symbol] = stockData;
   
-  const base = basePrice[symbol] || 100;
-  const variation = (Math.random() - 0.5) * 5; // ±$2.50 variation
-  return Math.round((base + variation) * 100) / 100;
-}
+  // Broadcast to all connected clients
+  const message = JSON.stringify({
+    type: 'update',
+    symbol: stockData.symbol,
+    price: stockData.price,
+    change: stockData.change,
+    changePercent: stockData.changePercent,
+    timestamp: stockData.timestamp
+  });
+  
+  wss.clients.forEach(client => {
+    if (client.readyState === 1) { // WebSocket.OPEN
+      client.send(message);
+    }
+  });
+  
+  console.log(`Updated ${stockData.symbol}: $${stockData.price} (${stockData.changePercent?.toFixed(2)}%)`);
+});
 
-// Initialize stock prices
+// Initialize stock prices for testing
 SYMBOLS.forEach(symbol => {
-  stockPrices[symbol] = generateMockPrice(symbol);
+  stockPrices[symbol] = {
+    symbol,
+    price: 0,
+    timestamp: Date.now(),
+    change: 0,
+    changePercent: 0
+  };
 });
 
 // WebSocket connection handler
@@ -67,31 +86,20 @@ wss.on('connection', (ws) => {
   });
 });
 
-// Simulate real-time price updates
-setInterval(() => {
-  SYMBOLS.forEach(symbol => {
-    // Update price with some probability
-    if (Math.random() < 0.3) { // 30% chance of price update
-      stockPrices[symbol] = generateMockPrice(symbol);
-      
-      // Broadcast to all connected clients
-      const message = JSON.stringify({
-        type: 'update',
-        symbol,
-        price: stockPrices[symbol],
-        timestamp: Date.now()
-      });
-      
-      wss.clients.forEach(client => {
-        if (client.readyState === 1) { // WebSocket.OPEN
-          client.send(message);
-        }
-      });
-      
-      console.log(`Updated ${symbol}: $${stockPrices[symbol]}`);
-    }
-  });
-}, 2000); // Update every 2 seconds
+// Start massive API connection
+massiveClient.connect().catch(error => {
+  console.error('Failed to connect to Massive API:', error);
+  console.log('Starting simulation mode for testing...');
+  massiveClient.startSimulation();
+});
+
+// Fallback simulation if massive API doesn't work
+setTimeout(() => {
+  if (Object.values(stockPrices).every(stock => stock.price === 0)) {
+    console.log('No data from Massive API, starting simulation...');
+    massiveClient.startSimulation();
+  }
+}, 5000);
 
 server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
