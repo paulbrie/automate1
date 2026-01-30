@@ -1,0 +1,25 @@
+{
+  "name": "stock-data-app",
+  "version": "1.0.0",
+  "description": "Real-time stock data app using massive API",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsx src/server.ts",
+    "test": "playwright test"
+  },
+  "type": "module",
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.1",
+    "@types/express": "^4.17.20",
+    "@types/node": "^20.8.0",
+    "@types/ws": "^8.5.8",
+    "tsx": "^4.0.0",
+    "typescript": "^5.2.2"
+  }
+}
