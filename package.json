@@ -11,6 +11,7 @@
   },
   "type": "module",
   "dependencies": {
+    "@massive.com/client-js": "^10.2.0",
     "dotenv": "^17.2.3",
     "express": "^4.18.2",
     "ws": "^8.14.2"
